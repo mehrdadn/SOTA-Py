@@ -1,0 +1,33 @@
+Except where otherwise stated, this software is licensed under the
+Creative Commons Attribution-NonCommercial 4.0 International License.
+To view a copy of this license, visit http://creativecommons.org/licenses/by-nc/4.0/
+or send a letter to Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
+
+Exception(s):
+
+OpenStreetMap data is (necessarily) licensed under their Open Database License.
+For full information, please visit: https://www.openstreetmap.org/copyright
+Note that the software does not make use of any particular map dataset,
+and therefore the map data is not part of the software itself.
+Any such dataset included (including any references in the source code)
+is merely to help test or demonstrate how the software might be used.
+________________________________________________________________________________
+
+Unofficial "Human" English below (unofficial/informal/legally non-binding):
+
+My entire goal in releasing this software is to help advance research in this area.
+That means I intend it to be open for academic, personal, and hobby use
+(including, for example, school hackathons or university research).
+
+If you think you might not be able to use this software for academic research
+because (for example) your use might be legally fall under "commercial" use,
+please contact me so we can find a solution, because my entire intention is that
+this software be open for research. If it's not, it's defeating my entire goal.
+
+Regarding commercial use:
+This is probably a moot point because I honestly don't see this software as
+production-quality and I think it's unlikely anyone can monetize it,
+but if you would nevertheless like to use it commercially, please contact me,
+and I'd obviously be very happy to work out a license that works with you.
+
+Cheers!
