@@ -372,7 +372,7 @@ class Network(object):
 					ki = 0
 					while ki < kn:
 						k = edge_hmm[ki]
-						if (k[2] < min_sdev and (k[3] > 0 or ki == 0)):
+						if (k[2] is None or k[2] < min_sdev and (k[3] > 0 or ki == 0)):
 							j = (edge_id[0] + edge_startNodeId[0] + edge_endNodeId[0] + ki) % ntypical_modes
 							typical_modes_sorted_reverse_j = tuple(typical_modes_sorted_reverse[j].tolist())
 							k[0] = mode_names[int(typical_modes_sorted_reverse_j[3])]
@@ -1005,6 +1005,7 @@ class Path(object):
 		self.path_tree_root = []
 		self.pq = []
 	def __nonzero__(self): return not not self.pq
+	__bool__ = __nonzero__
 	def start(self, isrc, tibudget):
 		if tibudget > self.tibudget_max: raise ValueError("unprepared for this time budget; convolution data may have been discarded")
 		self.tibudget = tibudget

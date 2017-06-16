@@ -124,6 +124,7 @@ class NetworkGUI(object):
 			self.center = center_normalized * SOTA.EARTH_RADIUS_MM
 			self.unsort_edges()
 	def __nonzero__(self): return not not self.window
+	__bool__ = __nonzero__
 	def unsort_edges(self):
 		self.isorted_edges = self.edge_original_order
 	def sort_edges(self):  # can slow down rendering
@@ -163,8 +164,8 @@ class NetworkGUI(object):
 		isorted_lines_counts = self.edge_indices_to_line_counts[self.isorted_edges]
 		gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
 		gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-		gl.glColorPointer(self.line_colors.size / len(self.lines), gl.GL_DOUBLE, 0, self.line_colors.ctypes.data)
-		gl.glVertexPointer(self.lines_array.size / len(self.lines), gl.GL_DOUBLE, 0, self.lines_array.ctypes.data)
+		gl.glColorPointer(self.line_colors.size // len(self.lines), gl.GL_DOUBLE, 0, self.line_colors.ctypes.data)
+		gl.glVertexPointer(self.lines_array.size // len(self.lines), gl.GL_DOUBLE, 0, self.lines_array.ctypes.data)
 		mode = gl.GL_LINE_STRIP
 		for i in range(len(edge_lanes_changes)):
 			ilinewidth_change = edge_lanes_changes[i]
@@ -196,7 +197,7 @@ class NetworkGUI(object):
 		return v ** 0.75
 	@property
 	def is_possibly_visible(self):
-		return pyglet_win32 is None or not pyglet_win32._user32.IsIconic(self.window._hwnd)
+		return pyglet_win32 is None or self.window and not pyglet_win32._user32.IsIconic(self.window._hwnd)
 	def is_out_of_date(self, update_interval_sec):
 		if update_interval_sec < self.prev_update_duration: update_interval_sec = self.prev_update_duration
 		return timer() - self.prev_update_time >= update_interval_sec
