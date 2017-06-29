@@ -1015,8 +1015,13 @@ class Path(object):
 			((), ~len(self.policy.network.edges), isrc), 0, numpy.asarray([1.0]), self.path_tree_root
 		))
 		self.found_reliability = 0
-	def step(self, edge_filter={}.get(None)):
-		result = {}.get(None)
+	def step(self, edge_filter={}.get(None), None_={}.get(None)):
+		# Note:
+		#   This procedure does NOT automatically exclude duplicate nodes in the path.
+		#   Use the filter mechanism to suppress these.
+		#   Note that if you do not suppress paths that re-visit the same nodes,
+		#   you can easily get exponential-time behavior. (!)
+		result = None_
 		policy = self.policy
 		cached_edges_tidist = policy.cached_edges_tidist
 		min_itimes_to_dest = policy.min_itimes_to_dest

@@ -419,7 +419,7 @@ def main(program, *args):
 
 		if isrc is not None and idst is not None:
 			gui_policy_update_interval_sec = gui_update_interval_sec
-			gui_path_update_interval_sec = gui_update_interval_sec
+			gui_path_update_interval_sec = gui_update_interval_sec * 2
 			time_total = 0
 			time_start = timer()
 			sota_policy = SOTA.Policy(network, idst, discretization, True, False, suppress_calculation=False, stderr=stderr)
@@ -450,18 +450,28 @@ def main(program, *args):
 				sota_path = SOTA.Path(sota_policy, tibudget)
 				seen_edges = {0 for _ in ()}
 				seen_paths = {}
+				new_edges_seen = []
+				def consider_edge(eij, path_so_far, *args):
+					new_edges_seen.append(eij)
+					j = network.edges.end[eij]
+					keep = j != isrc
+					if keep:
+						rlist = path_so_far
+						while rlist[1] >= 0:
+							if j == rlist[2]: keep = False; break
+							rlist = rlist[0]
+					return keep
 				for tibudget_current in range(tibudget, sota_policy.min_itimes_to_dest[isrc] - 1, -1):
 					sota_path.start(isrc, tibudget_current)
-					new_edges_seen = []
 					while 1:
-						found = sota_path.step(lambda eij, *args: new_edges_seen.append(eij))
-						i = 0
-						while i < len(new_edges_seen):
-							if new_edges_seen[i] in seen_edges:
-								new_edges_seen[i] = new_edges_seen[-1]
+						found = sota_path.step(consider_edge)
+						k = 0
+						while k < len(new_edges_seen):
+							if new_edges_seen[k] in seen_edges:
+								new_edges_seen[k] = new_edges_seen[-1]
 								new_edges_seen.pop()
 								continue
-							i += 1
+							k += 1
 						seen_edges.update(new_edges_seen)
 						gui.update_edges(new_edges_seen, (1, 0.75, 0, gui.alpha_processed), 3, 6)
 						if gui.is_out_of_date(gui_path_update_interval_sec):
@@ -471,12 +481,14 @@ def main(program, *args):
 						(reached_destination, path_so_far, reliability) = found
 						if not reached_destination: continue
 						path = []
-						while path_so_far[1] >= 0:
-							path.append(path_so_far[1])
-							path_so_far = path_so_far[0]
+						rlist = path_so_far
+						while rlist[1] >= 0:
+							path.append(rlist[1])
+							rlist = rlist[0]
 						path.reverse()
 						path_key = tuple(path)
 						if path_key not in seen_paths:
+							print_("Found new path for tibudget = %s; examining other time budgets..." % (tibudget_current,))
 							seen_paths[path_key] = (len(seen_paths), [])
 							gui.add_path(path, (1 - reliability, 0, reliability, gui.alpha_processed * 1.0 / 2), 8, 0)
 							if gui.is_out_of_date(gui_path_update_interval_sec):
