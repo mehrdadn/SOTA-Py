@@ -471,7 +471,7 @@ def main(program, *args):
 						(reached_destination, path_so_far, reliability) = found
 						if not reached_destination: continue
 						path = []
-						while path_so_far[1] is not None:
+						while path_so_far[1] >= 0:
 							path.append(path_so_far[1])
 							path_so_far = path_so_far[0]
 						path.reverse()

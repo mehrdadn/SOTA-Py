@@ -1012,7 +1012,7 @@ class Path(object):
 		del self.pq[:]
 		self.pq.append((
 			-(max(self.policy.uv[isrc][tibudget - self.policy.min_itimes_to_dest[isrc]:].tolist() + [0.0])),
-			({}.get(None), {}.get(None), isrc), 0, numpy.asarray([1.0]), self.path_tree_root
+			((), ~len(self.policy.network.edges), isrc), 0, numpy.asarray([1.0]), self.path_tree_root
 		))
 		self.found_reliability = 0
 	def step(self, edge_filter={}.get(None)):
