@@ -211,7 +211,7 @@ class NetworkGUI(object):
 				if order is not None: self.edge_orders[eij] = order
 				if lanes is not None: self.edge_lanes[eij] = lanes
 	def refresh(self, resort=False, wait_for_next_event=False):
-		if self.prev_update_duration < 0:  # we haven't started yet...
+		if self.window and self.prev_update_duration < 0:  # we haven't started yet...
 			self.prev_update_duration = 0
 			if pyglet:
 				pyglet.app.event_loop.has_exit = False
@@ -482,8 +482,8 @@ def main(program, *args):
 							if gui.is_out_of_date(gui_path_update_interval_sec):
 								gui.refresh(True)
 						seen_paths[path_key][1].append(reliability)
-			for (path, (index, reliabilities)) in sorted(seen_paths.items(), key=lambda p: p[1][0]):
-				print_("Path: [%s .. %s] %s" % (reliabilities[0], reliabilities[-1], list(map(sota_policy.network.edges.id.__getitem__, path))), file=stdout)
+				for (path, (index, reliabilities)) in sorted(seen_paths.items(), key=lambda p: p[1][0]):
+					print_("Path: [%s .. %s] %s" % (reliabilities[0], reliabilities[-1], list(map(sota_policy.network.edges.id.__getitem__, path))), file=stdout)
 			gui.refresh(True)
 			time_total += timer() - time_start
 			print_("Policy: %s" % (repr(max(sota_policy.uv[isrc].tolist()[tibudget - sota_policy.min_itimes_to_dest[isrc]:] + [0.0])),), file=stderr)
