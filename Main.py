@@ -201,7 +201,7 @@ class NetworkGUI(object):
 	def possibly_needs_drawing(self):
 		return self.invalidated and (pyglet_win32 is None or self.window and not pyglet_win32._user32.IsIconic(self.window._hwnd))
 	def is_out_of_date(self, update_interval_sec):
-		prev_update_duration = self.prev_update_duration
+		prev_update_duration = self.prev_update_duration * 4
 		if update_interval_sec < prev_update_duration: update_interval_sec = prev_update_duration
 		return timer() - self.prev_update_time >= update_interval_sec
 	def add_path(self, path, color, lanes, index={}.get(None)):
@@ -218,21 +218,16 @@ class NetworkGUI(object):
 	def refresh(self, resort=False, wait_for_next_event=False):
 		result = 0
 		if self.window:
+			now0 = timer()
 			if self.prev_update_duration < 0: # we haven't started yet...
 				self.prev_update_duration = 0
-				now0 = timer()
 				if pyglet:
 					pyglet.app.event_loop.has_exit = False
 					pyglet.app.event_loop.is_running = True
 					pyglet.app.event_loop._legacy_setup()
 					pyglet.app.platform_event_loop.start()
-				now1 = timer()
-				result += now1 - now0
-			else:
-				now1 = timer()
+				result += timer() - now0
 			if resort: self.sort_edges()
-			now2 = timer()
-			self.prev_update_duration = now2 - now1
 			if self.possibly_needs_drawing:
 				self.window.dispatch_event('on_draw')
 				self.window.flip()
@@ -242,7 +237,7 @@ class NetworkGUI(object):
 					buffer = numpy.empty((self.window.height, self.window.width, 4), numpy.uint8)
 					self.gl.glReadPixels(0, 0, self.window.width, self.window.height, self.gl.GL_RGBA, self.gl.GL_UNSIGNED_BYTE, ctypes.cast(buffer.ctypes.data, ctypes.c_void_p))
 					self.gif.append_data(buffer[::-1, ...])
-			now3 = timer()
+			now1 = timer()
 			has_exit = pyglet.app.event_loop.has_exit
 			if not has_exit:
 				idle = pyglet.app.event_loop.idle()
@@ -252,9 +247,10 @@ class NetworkGUI(object):
 			if has_exit:
 				pyglet.app.platform_event_loop.stop()
 				self.window = None
-			now4 = timer()
-			result += now4 - now3
-			self.prev_update_time = now4
+			now2 = timer()
+			self.prev_update_duration = now2 - now0
+			result += now2 - now1
+			self.prev_update_time = now2
 		return result
 
 def parse_id(s):
@@ -368,28 +364,6 @@ class PolicyGUIUpdater(object):
 				dirty_iedges_append(eij)
 			next_edge_update_times_minus_tijoffset[eij] = ti - tijoffsets[eij]
 
-class RSet(set):
-	def _not_implemented(self, *args): raise NotImplementedError()
-	list(map(lambda key, locals_=locals(), not_implemented=_not_implemented: locals_.setdefault(key, not_implemented), filter(lambda key: key not in object.__dict__ and key not in ('copy',), set.__dict__.keys())))
-	def __init__(self, current={}.get(None), parent={}.get(None)):
-		# if parent is not None: assert isinstance(parent, RSet)
-		set.__init__(self, current) if current is not None else set.__init__(self)
-		self._parent = parent
-	def __iter__(self, set_iter=set.__iter__, set_update=set.update):
-		parent = self._parent
-		while parent is not None:
-			set_update(self, set_iter(parent))
-			self._parent = parent = parent._parent
-		return set_iter(self)
-	def __contains__(self, item, set_contains=set.__contains__, set_iter=set.__iter__, set_update=set.update):
-		found = set_contains(self, item)
-		parent = self._parent
-		while not found and parent is not None:
-			found = found or set_contains(parent, item)
-			set_update(self, set_iter(parent))
-			self._parent = parent = parent._parent
-		return found
-
 def main(program, *args):
 	os.environ['SDL_VIDEO_CENTERED'] = '1'
 	numpy.seterr(all='raise')
@@ -459,7 +433,6 @@ def main(program, *args):
 		if isrc is not None and idst is not None:
 			gui_policy_update_interval_sec = gui_update_interval_sec
 			gui_path_update_interval_sec = gui_update_interval_sec
-			time_total = 0
 			time_start = timer()
 			sota_policy = SOTA.Policy(network, idst, discretization, True, False, suppress_calculation=False, stderr=stderr)
 			print_("Routing from #%s to #%s with budget T = %s/%s = %s steps..." % (isrc, idst, tbudget, discretization, int(SOTA.discretize_up([tbudget], discretization)[0])), file=stderr)
@@ -489,6 +462,10 @@ def main(program, *args):
 					prev_progress = sota_policy.progress
 			gui_policy_updater.update()
 			gui.refresh()
+			time_policy = timer() - time_start
+			print_("Policy: %s" % (repr(max(sota_policy.uv[isrc].tolist()[tibudget - sota_policy.min_itimes_to_dest[isrc]:] + [0.0])),), file=stderr)
+			print_("Policy time: %s seconds" % (time_policy,), file=stderr)
+			time_start = timer()
 			if 1:
 				sota_path = SOTA.Path(sota_policy, tibudget)
 				seen_paths = {}
@@ -497,17 +474,14 @@ def main(program, *args):
 				OLD_EDGE_GUI_UPDATE = ((1, 0.75, 0, gui.alpha_processed), 3, 6)
 				NEW_EDGE_GUI_UPDATE = ((1, 0.25, 0, gui.alpha_processed), 4, 4)
 				for tibudget_current in range(tibudget, sota_policy.min_itimes_to_dest[isrc] - 1, -1):
-					sota_path.start(isrc, tibudget_current, ({}.get(None), {}.get(None)))
-					def consider_edge(eij, path_so_far, parts_so_far, reliability, timin_elapsed, tidist_curr):
-						(edges_so_far, nodes_so_far) = parts_so_far
+					sota_path.start(isrc, tibudget_current)
+					def consider_edge(eij, j, path_so_far, path_node_set, reliability, timin_elapsed, tidist_curr):
 						new_edges_seen.add(eij)
-						if edges_so_far is not None: new_edges_seen.update(edges_so_far.__iter__())
-						j = network.edges.end[eij]
-						if j == isrc or nodes_so_far is not None and j in nodes_so_far: return False
-						return (RSet({eij}, edges_so_far), RSet({j}, nodes_so_far))
+						return j not in path_node_set
 					while 1:
 						found = sota_path.step(consider_edge)
 						if gui.is_out_of_date(gui_path_update_interval_sec):
+							new_edges_seen.difference_update(old_edges_seen)
 							gui.update_edges(old_edges_seen, *OLD_EDGE_GUI_UPDATE)
 							gui.update_edges(new_edges_seen, *NEW_EDGE_GUI_UPDATE)
 							gui.refresh(len(new_edges_seen) > 0)
@@ -530,16 +504,16 @@ def main(program, *args):
 							if gui.is_out_of_date(gui_path_update_interval_sec):
 								gui.refresh(True)
 						seen_paths[path_key][1].append(reliability)
-					old_edges_seen[len(old_edges_seen):] = new_edges_seen
-					new_edges_seen.clear()
-					gui.update_edges(old_edges_seen, *OLD_EDGE_GUI_UPDATE)
-					del old_edges_seen[:]
+				old_edges_seen[len(old_edges_seen):] = new_edges_seen
+				new_edges_seen.clear()
+				gui.update_edges(old_edges_seen, *OLD_EDGE_GUI_UPDATE)
+				del old_edges_seen[:]
 				for (path, (index, reliabilities)) in sorted(seen_paths.items(), key=lambda p: p[1][0]):
 					print_("Path: [%s .. %s] %s" % (reliabilities[0], reliabilities[-1], list(map(sota_policy.network.edges.id.__getitem__, path))), file=stdout)
 			gui.refresh(True)
-			time_total += timer() - time_start
-			print_("Policy: %s" % (repr(max(sota_policy.uv[isrc].tolist()[tibudget - sota_policy.min_itimes_to_dest[isrc]:] + [0.0])),), file=stderr)
-			print_("Time: %s seconds" % (time_total,), file=stderr)
+			time_path = timer() - time_start
+			print_("Path   time: %s seconds" % (time_path,), file=stderr)
+			print_("Total  time: %s seconds" % (time_path + time_policy,), file=stderr)
 		while gui:
 			gui.refresh(True, True)
 	finally:

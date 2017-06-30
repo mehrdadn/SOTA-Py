@@ -185,6 +185,27 @@ def cartesian_to_geographic(x, y, z):
 	r *= 180 / numpy.pi
 	return r
 
+class RSet(set):
+	def _not_implemented(self, *args): raise NotImplementedError()
+	list(map(lambda key, locals_=locals(), not_implemented=_not_implemented: locals_.setdefault(key, not_implemented), filter(lambda key: key not in object.__dict__ and key not in ('copy',), set.__dict__.keys())))
+	def __init__(self, current={}.get(None), parent={}.get(None)):
+		# if parent is not None: assert isinstance(parent, RSet)
+		set.__init__(self, current) if current is not None else set.__init__(self)
+		self._parent = parent
+	def __contains__(self, item, set_contains=set.__contains__, set_iter=set.__iter__, set_update=set.update):
+		found = set_contains(self, item)
+		if not found:
+			node = self._parent
+			if node is not None:
+				found = found or set_contains(node, item)
+				if not found:
+					parent = node._parent
+					while not found and parent is not None:
+						found = found or set_contains(parent, item)
+						set_update(node, set_iter(parent))
+						node._parent = parent = parent._parent
+		return found
+
 class Records(object):
 	def __len__(self): return NotImplemented
 	def __getitem__(self, index):
@@ -1008,24 +1029,24 @@ class Path(object):
 		self.pq = []
 	def __nonzero__(self): return not not self.pq
 	__bool__ = __nonzero__
-	def start(self, isrc, tibudget, initial_filter_contex={}.get(None)):
+	def start(self, isrc, tibudget):
 		if tibudget > self.tibudget_max: raise ValueError("unprepared for this time budget; convolution data may have been discarded")
 		self.tibudget = tibudget
 		del self.pq[:]
 		uvsrc = self.policy.uv[isrc][tibudget - self.policy.min_itimes_to_dest[isrc]:]
 		self.pq.append((
 			-(max(uvsrc.tolist()) if len(uvsrc) > 0 else 0.0),
-			((), ~len(self.policy.network.edges), isrc),
-			initial_filter_contex, 0, self.kronecker_delta, self.path_tree_root
+			((), ~len(self.policy.network.edges)), isrc,
+			0, RSet({isrc}), self.kronecker_delta, self.path_tree_root
 		))
 		self.found_reliability = 0
-	def step(self, edge_filter={}.get(None), None_={}.get(None)):
+	def step(self, edge_filter={}.get(None)):
 		# Note:
 		#   This procedure does NOT automatically exclude duplicate nodes in the path.
 		#   Use the filter mechanism to suppress these.
 		#   Note that if you do not suppress paths that re-visit the same nodes,
 		#   you can easily get exponential-time behavior. (!)
-		result = None_
+		result = None
 		policy = self.policy
 		cached_edges_tidist = policy.cached_edges_tidist
 		min_itimes_to_dest = policy.min_itimes_to_dest
@@ -1034,11 +1055,10 @@ class Path(object):
 		uv = policy.uv
 		pq = self.pq
 		convolve = self.convolve
-		while result is None and len(pq) > 0:
-			(negative_reliability, path_so_far, filter_context, timin_elapsed, tidist_curr, path_tree_node) = heapq.heappop(pq) if True else pq[0]
+		while pq:
+			(negative_reliability, path_so_far, i, timin_elapsed, path_node_set, tidist_curr, path_tree_node_parent) = heapq.heappop(pq) if 1 else pq[0]
 			reliability = -negative_reliability
 			if reliability >= self.found_reliability:
-				i = path_so_far[2]
 				reached_destination = min_itimes_to_dest[i] <= 0
 				if reached_destination:
 					self.found_reliability = reliability
@@ -1049,24 +1069,24 @@ class Path(object):
 						timin_elapsed_and_remaining = timin_elapsed_next + min_itimes_to_dest[j]
 						timax_left_next_minus_offset = self.tibudget - timin_elapsed_and_remaining
 						if timax_left_next_minus_offset < 0: continue
-						next_filter_context = edge_filter(eij, path_so_far, filter_context, reliability, timin_elapsed, tidist_curr) if edge_filter else None
-						if next_filter_context is False: continue
-						while k >= len(path_tree_node):
-							path_tree_node.append({}.get(None))
-						uvj = uv[j].ndarray
-						path_tree_node_next = path_tree_node[k]
-						if path_tree_node_next is None:
-							tidist_next   = convolve(tidist_curr, cached_edges_tidist[eij])[:self.tibudget_max - timin_elapsed_and_remaining + 1]
-							reliabilities = convolve(tidist_next, uvj[:self.tibudget_max - timin_elapsed_and_remaining + 1])
-							path_tree_node[k] = path_tree_node_next = ([], tidist_next, reliabilities)
+						if edge_filter and edge_filter(eij, j, path_so_far, path_node_set, reliability, timin_elapsed, tidist_curr) is False: continue
+						while k >= len(path_tree_node_parent):
+							path_tree_node_parent.append({}.get(None))
+						path_tree_node = path_tree_node_parent[k]
+						if path_tree_node is None:
+							path_tree_node_next = []
+							path_node_set_next = RSet({j}, path_node_set)
+							tidist_next = convolve(tidist_curr, cached_edges_tidist[eij])[:self.tibudget_max - timin_elapsed_and_remaining + 1]
+							reliabilities = convolve(tidist_next, uv[j].ndarray[:self.tibudget_max - timin_elapsed_and_remaining + 1])
+							path_tree_node_parent[k] = (path_tree_node_next, path_node_set_next, tidist_next, reliabilities)
 						else:
-							tidist_next   = path_tree_node_next[1]
-							reliabilities = path_tree_node_next[2]
+							(path_tree_node_next, path_node_set_next, tidist_next, reliabilities) = path_tree_node
 						reliability_next = float(reliabilities[timax_left_next_minus_offset])
 						assert 1 or numpy.any(numpy.isclose(reliability_next, numpy.dot(
-							tidist_next[max(timax_left_next_minus_offset + 1 - len(uvj), 0) : timax_left_next_minus_offset + 1],
-							strict_slice(uvj, max(timax_left_next_minus_offset + 1 - len(tidist_next), 0),  timax_left_next_minus_offset + 1)[::-1]
+							tidist_next[max(timax_left_next_minus_offset + 1 - len(uv[j].ndarray), 0) : timax_left_next_minus_offset + 1],
+							uv[j].ndarray[max(timax_left_next_minus_offset + 1 - len(tidist_next), 0) : timax_left_next_minus_offset + 1][::-1]
 							).item(), 1E-7, 1E-10))
-						heapq.heappush(pq, (-reliability_next, (path_so_far, eij, j), next_filter_context, timin_elapsed_next, tidist_next, path_tree_node_next[0]))
+						heapq.heappush(pq, (-reliability_next, (path_so_far, eij), j, timin_elapsed_next, path_node_set_next, tidist_next, path_tree_node_next))
 				result = (reached_destination, path_so_far, reliability)
+				break
 		return result
