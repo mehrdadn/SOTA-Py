@@ -46,7 +46,7 @@ You'd probably need a navigation device for this, since there are too many possi
 This is what you'd prefer to do, because it can potentially give better results depending on whether you get lucky/unlucky with traffic.
 
 This is a dynamic-programming problem, because the probability of reaching your destination on time
-is just the maximum probability of reaching it from each road the next intersection.
+is just the maximum probability of reaching it from each road at the next intersection.
 
 ### What is the *path-based* SOTA problem?
 
