@@ -995,6 +995,8 @@ class Policy(object):
 		self.tiprevs[i] = ti
 
 class Path(object):
+	kronecker_delta = numpy.asarray([1.0])
+	kronecker_delta.flags['WRITEABLE'] = False
 	@staticmethod
 	def convolve(a, b, correlate2=numpy.core.multiarray.correlate2):
 		return correlate2(a, b[::-1], 2)
@@ -1006,13 +1008,15 @@ class Path(object):
 		self.pq = []
 	def __nonzero__(self): return not not self.pq
 	__bool__ = __nonzero__
-	def start(self, isrc, tibudget):
+	def start(self, isrc, tibudget, initial_filter_contex={}.get(None)):
 		if tibudget > self.tibudget_max: raise ValueError("unprepared for this time budget; convolution data may have been discarded")
 		self.tibudget = tibudget
 		del self.pq[:]
+		uvsrc = self.policy.uv[isrc][tibudget - self.policy.min_itimes_to_dest[isrc]:]
 		self.pq.append((
-			-(max(self.policy.uv[isrc][tibudget - self.policy.min_itimes_to_dest[isrc]:].tolist() + [0.0])),
-			((), ~len(self.policy.network.edges), isrc), 0, numpy.asarray([1.0]), self.path_tree_root
+			-(max(uvsrc.tolist()) if len(uvsrc) > 0 else 0.0),
+			((), ~len(self.policy.network.edges), isrc),
+			initial_filter_contex, 0, self.kronecker_delta, self.path_tree_root
 		))
 		self.found_reliability = 0
 	def step(self, edge_filter={}.get(None), None_={}.get(None)):
@@ -1031,7 +1035,7 @@ class Path(object):
 		pq = self.pq
 		convolve = self.convolve
 		while result is None and len(pq) > 0:
-			(negative_reliability, path_so_far, timin_elapsed, tidist_curr, path_tree_node) = heapq.heappop(pq)
+			(negative_reliability, path_so_far, filter_context, timin_elapsed, tidist_curr, path_tree_node) = heapq.heappop(pq) if True else pq[0]
 			reliability = -negative_reliability
 			if reliability >= self.found_reliability:
 				i = path_so_far[2]
@@ -1045,8 +1049,8 @@ class Path(object):
 						timin_elapsed_and_remaining = timin_elapsed_next + min_itimes_to_dest[j]
 						timax_left_next_minus_offset = self.tibudget - timin_elapsed_and_remaining
 						if timax_left_next_minus_offset < 0: continue
-						if edge_filter and edge_filter(eij, path_so_far, reliability, timin_elapsed, tidist_curr) is False:
-							continue
+						next_filter_context = edge_filter(eij, path_so_far, filter_context, reliability, timin_elapsed, tidist_curr) if edge_filter else None
+						if next_filter_context is False: continue
 						while k >= len(path_tree_node):
 							path_tree_node.append({}.get(None))
 						uvj = uv[j].ndarray
@@ -1063,6 +1067,6 @@ class Path(object):
 							tidist_next[max(timax_left_next_minus_offset + 1 - len(uvj), 0) : timax_left_next_minus_offset + 1],
 							strict_slice(uvj, max(timax_left_next_minus_offset + 1 - len(tidist_next), 0),  timax_left_next_minus_offset + 1)[::-1]
 							).item(), 1E-7, 1E-10))
-						heapq.heappush(pq, (-reliability_next, (path_so_far, eij, j), timin_elapsed_next, tidist_next, path_tree_node_next[0]))
+						heapq.heappush(pq, (-reliability_next, (path_so_far, eij, j), next_filter_context, timin_elapsed_next, tidist_next, path_tree_node_next[0]))
 				result = (reached_destination, path_so_far, reliability)
 		return result
