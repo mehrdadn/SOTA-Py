@@ -87,7 +87,7 @@ This code models the travel time across every road as a mixture of Gaussian dist
 It discretizes the distributions and solves the discrete problem in discrete-time.
 
 Obviously, realistic travel times are not normally distributed. But that's the model of the data I had.
-Getting good traffic data is hard, and encoding it efficiently is also hard.
+Getting good traffic data is hard, and encoding data efficiently is also hard.
 If you don't like the current model, you'd have to change the code to accommodate other models.
 
 # The Code
@@ -96,10 +96,10 @@ If you don't like the current model, you'd have to change the code to accommodat
 
 ### Dependencies
 
-- **NumPy** is the only hard external dependency.  
-- **Numba**, if available, is used for compiling Python to native code (≈ 3× speedup).  
-- **PyGLET**, if available, is used for rendering the results on the screen via OpenGL.
-- **SciPy**, if available, is used for slightly faster FFTs.  
+- [**NumPy**](http://www.numpy.org) is the only hard external dependency.  
+- [**Numba**](//numba.pydata.org), if available, is used for compiling Python to native code (≈ 3× speedup).  
+- [**PyGLET**](http://www.pyglet.org), if available, is used for rendering the results on the screen via OpenGL.
+- [**SciPy**](//www.scipy.org), if available, is used for slightly faster FFTs.  
 
 ### Map File Format
 
