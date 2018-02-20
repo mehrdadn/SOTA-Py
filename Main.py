@@ -497,9 +497,10 @@ def make_threading_pipes(duplex=True):
 	return (ThreadingPipe(s1, q1, s2 if duplex else None, q2 if duplex else None), ThreadingPipe(s2 if duplex else None, q2 if duplex else None, s1, q1))
 
 if __name__ in ('__parents_main__', '__mp_main__'): print_("Communicating computational state to worker process...", end=" ", file=sys.stderr)
-def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tprev=timer()):
+def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, my_listening={}.get(None), other_listening={}.get(None), tprev=timer()):
 	stderr = sys.stderr
 	# The try-finally blocks here are (imperfect) means for ensuring the parent process always receives a signal, even if we error
+	prev_other_listening = other_listening.value - 1 if other_listening is not None else {}.get(None)
 	try:
 		try:  # compute policy
 			if __name__ in ('__parents_main__', '__mp_main__'): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr)
@@ -512,7 +513,16 @@ def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tp
 				if not empty:
 					(i, ti) = stack.pop()
 					sota_policy.step(i, ti, active_gui_edges.append)
-				if empty or pipe.poll() and pipe.recv():
+				is_other_ready = empty
+				if not is_other_ready:
+					if other_listening is None:
+						is_other_listening = True
+					else:
+						curr_other_listening = other_listening.value
+						if curr_other_listening != prev_other_listening:
+							is_other_ready = True
+							prev_other_listening = curr_other_listening
+				if is_other_ready:
 					pipe.send((ti, active_gui_edges, sota_policy.progress))
 					del active_gui_edges[:]
 		finally: pipe.send(b'')
@@ -549,7 +559,16 @@ def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tp
 						if path_key_or_index is path_key:
 							seen_paths[path_key] = len(seen_paths)
 						pending_items.append((tibudget_current, path_key_or_index, reliability))
-				if empty or pipe.poll() and pipe.recv():
+				is_other_ready = empty
+				if not is_other_ready:
+					if other_listening is None:
+						is_other_listening = True
+					else:
+						curr_other_listening = other_listening.value
+						if curr_other_listening != prev_other_listening:
+							is_other_ready = True
+							prev_other_listening = curr_other_listening
+				if is_other_ready:
 					pipe.send((new_edges_seen, pending_items))
 					new_edges_seen.clear()
 					del pending_items[:]
@@ -565,8 +584,9 @@ def get_multiprocessing():
 
 def apply_async(multiprocess, func, args={}.get(None)):
 	multiprocessing = get_multiprocessing()
+	(listening1, listening2) = (multiprocessing.Value('l', 0), multiprocessing.Value('l', 0))
 	(piper, pipew) = multiprocessing.Pipe(True) if multiprocess else make_threading_pipes()
-	kwargs = {'pipe': pipew}
+	kwargs = {'pipe': pipew, 'my_listening': listening2, 'other_listening': listening1}
 	if multiprocess:
 		process = multiprocessing.Process(target=func, args=args, kwargs=kwargs)
 		process.start()
@@ -574,7 +594,7 @@ def apply_async(multiprocess, func, args={}.get(None)):
 		thread = threading.Thread(target=func, args=args, kwargs=kwargs)
 		thread.setDaemon(True)
 		thread.start()
-	return piper
+	return (piper, listening1, listening2)
 
 def main(program, *args):
 	os.environ['SDL_VIDEO_CENTERED'] = '1'
@@ -651,7 +671,7 @@ def main(program, *args):
 			sota_policy = SOTA.Policy(network, idst, discretization, False, False, transpose_graph, suppress_calculation=False, stderr=stderr)
 			print_("Routing from #%s to #%s with budget T = %s/%s = %s steps..." % (isrc, idst, tbudget, discretization, int(SOTA.discretize_up([tbudget], discretization)[0])), file=stderr)
 			(visited_iedges, tibudget, total_progress) = sota_policy.prepare(isrc, tbudget, 1, False, stderr=stderr)
-			pipe = apply_async(multiprocess, worker_process, (sota_policy, isrc, tibudget, sota_policy.min_itimes_to_dest[isrc] - 1))
+			(pipe, my_listening, other_listening) = apply_async(multiprocess, worker_process, (sota_policy, isrc, tibudget, sota_policy.min_itimes_to_dest[isrc] - 1))
 			alpha = 0.5
 			init_progress_time = timer()
 			prev_progress_time = init_progress_time
@@ -661,7 +681,7 @@ def main(program, *args):
 			prev_progress = init_progress
 			gui_policy_updater = PolicyGUIUpdater(sota_policy, sota_policy.transpose_graph, gui)
 			while 1:
-				if not pipe.poll(): pipe.send(True)
+				my_listening.value += 1
 				obj = pipe.recv()
 				if not obj: break
 				(ti, active_gui_edges, progress) = obj
@@ -695,7 +715,7 @@ def main(program, *args):
 			OLD_EDGE_GUI_UPDATE = ((1, 0.75, 0, gui.alpha_processed), 3, 6)
 			NEW_EDGE_GUI_UPDATE = ((1, 0.25, 0, gui.alpha_processed), 4, 4)
 			while 1:
-				if not pipe.poll(): pipe.send(True)
+				my_listening.value += 1
 				obj = pipe.recv()
 				if not obj: break
 				(new_edges_seen_delta, pending_items) = obj
