@@ -1,6 +1,10 @@
+try: import cPickle
+except ImportError: import _pickle as cPickle
+import ctypes
 import heapq
 import json
 import math
+import multiprocessing.sharedctypes
 import sys
 import timeit
 
@@ -11,7 +15,7 @@ import numpy, numpy.fft
 try: from scipy.fftpack._fftpack import drfft
 except ImportError: drfft = {}.get(None)
 
-if sys.version_info >= (3, 0): exec("print_ = print; xrange = range")
+if sys.version_info >= (3, 0): exec("print_ = lambda *args, **kwargs: print(*args, **kwargs) and None or (kwargs.get('file') or sys.stdout).flush(); xrange = range")
 else: print_ = __import__('__builtin__').__dict__['print']
 
 NUMBA_CACHE = True
@@ -19,9 +23,7 @@ NUMBA_EAGER = False
 try:
 	import numba  # OPTIONAL (~3x speedup)
 	try: numba.__version__  # I commented out the version determination in my local system, so make sure it's set before using cache=True
-	except AttributeError:
-		import numba._version
-		numba.__version__ = numba._version.get_versions()['version']
+	except AttributeError: numba.__version__ = '0+unknown'
 except ImportError: pass
 
 try:
@@ -56,54 +58,123 @@ except ImportError as e:
 		out /= 2
 		return out
 
-class Array(array):
-	__slots__ = ('ndarray', 'dtype', 'default_value_str', 'min_size_on_reallocate')
+def slotted_getstate(cls, self):
+	nonpickled = getattr(cls, '__nonpickled_slots__', ())
+	result = {}
+	for field in cls.__slots__:
+		if field not in nonpickled:
+			try: result[field] = cls.__getattribute__(self, field)
+			except AttributeError: pass
+	return result
+
+def slotted_setstate(cls, self, state):
+	for field in state:
+		cls.__setattr__(self, field, state[field])
+
+class Array(object):
+	__nonpickled_slots__ = ('ndarray',)
+	__slots__ = ('_impl', '_len', '_cap', '_off', 'dtype', '_default_value', '_min_size_on_reallocate') + __nonpickled_slots__
 	def __init__(self, dtype, default_value=None):
 		self.dtype = dtype
-		default_value_str = None
-		if default_value is None: default_value_str = b'\x00' * self.itemsize; array.fromstring(self, default_value_str)
-		else: array.append(self, default_value); default_value_str = array.tostring(self); array.pop(self)
-		self.default_value_str = default_value_str
-		self.min_size_on_reallocate = 0
-		self.refresh_ndarray()
-	def __new__(cls, dtype, default_value=None):
+		self.ndarray = {}.get(None)
+		self._off = 0
+		self._len = 0
+		self._cap = 0
+		self._impl = {}.get(None)
+		self._default_value = default_value
+		self._min_size_on_reallocate = 0
+		self.resize(0)
+		self._postinit()
+	@classmethod
+	def fromitems(cls, dtype, items):
+		n = len(items)
+		result = cls(dtype)
+		result.ensure_size(n)[:n] = items
+		return result
+	def _postinit(self):
+		self.ndarray = Array._get_ndarray(self)
+	def __getstate__(self): cls = Array; return slotted_getstate(cls, self)
+	def __setstate__(self, state): cls = Array; slotted_setstate(cls, self, state); cls._postinit(self)
+	@staticmethod
+	def create_buffer(typecode, capacity, initializer={}.get(None)):
+		result = multiprocessing.sharedctypes._new_value(multiprocessing.sharedctypes.typecode_to_type.get(typecode, typecode) * capacity)
+		if initializer is not None:
+			numpy.frombuffer(result, typecode, capacity)[:capacity] = initializer
+		return result
+	def resize(self, length):
+		old_len = self._len
+		old_ndarray = self.ndarray
+		need_to_copy_over = False
+		if self._impl is None or self._cap < length:
+			capacity = old_len + (old_len >> 1)
+			if capacity < length: capacity = length
+			self._impl = Array.create_buffer(self._typecode, capacity) if capacity > 0 else {}.get(None)
+			self._cap = capacity
+			self._off = 0
+			need_to_copy_over = True
+		self._len = length
+		self._postinit()
+		result = self.ndarray
+		min_len = old_len
+		if min_len > length:
+			min_len = length
+		if min_len and need_to_copy_over:
+			result[:min_len] = old_ndarray[:min_len]
+		if min_len < length and self._default_value is not None:
+			result[min_len:length] = self._default_value
+		return result
+	def switch_buffer(self, buffer, buffer_offset, buffer_capacity):
+		assert buffer_offset >= 0 and buffer_capacity >= 0 and buffer_offset + buffer_capacity <= len(buffer) and buffer_capacity >= self._len
+		old_ndarray = self.ndarray
+		self._impl = buffer
+		self._off = buffer_offset
+		self._cap = buffer_capacity
+		self._postinit()
+		self.ndarray[:] = old_ndarray
+	@staticmethod
+	def compute_type_code(dtype):
 		if dtype == float: type_code = 'd'
 		elif dtype == int: type_code = 'l'  # 'q' not supported in Python 2
 		elif dtype == bool: type_code = 'B'  # one-byte bools
 		else: raise ValueError(dtype)
-		uncasted_result = array.__new__(cls, type_code)
-		if 1 or isinstance(uncasted_result, Array): result = uncasted_result
-		return result
-	def ensure_size(self, n, actually_allocate=True, len=len):
+		return type_code
+	@property
+	def _typecode(self):
+		return Array.compute_type_code(self.dtype)
+	def assert_size(self, n):
+		assert n <= self._len
+		return self.ensure_size(n)
+	def ensure_size(self, n, actually_allocate=True):
 		assert n >= 0, "negative size is probably a bug somewhere"
 		if actually_allocate:
-			m = len(self)
+			m = self._len
 			if n > m:
-				min_size_on_reallocate = self.min_size_on_reallocate
-				array.fromstring(self, self.default_value_str * ((n if n >= min_size_on_reallocate else min_size_on_reallocate) - m))
-				return self.refresh_ndarray()
-			return self.ndarray
+				result = self.resize(n if n >= self._min_size_on_reallocate else self._min_size_on_reallocate)
+			else:
+				result = self.ndarray
+			return result
 		else:
-			self.min_size_on_reallocate = n
-	def refresh_ndarray(self, numpy_frombuffer=numpy.frombuffer):
-		self.ndarray = result = numpy_frombuffer(self, self.dtype)
-		return result
-	__setitem__  = None  #def __setitem__ (self, i, y):     result = array.__setitem__ (self, i, y)    ; self.refresh_ndarray(); return result
-	__delitem__  = None  #def __delitem__ (self, y):        result = array.__delitem__ (self, y)       ; self.refresh_ndarray(); return result
-	__delslice__ = None  #def __delslice__(self, i, j):     result = array.__delslice__(self, i, j)    ; self.refresh_ndarray(); return result
-	__iadd__     = None  #def __iadd__    (self, y):        result = array.__iadd__    (self, y)       ; self.refresh_ndarray(); return result
-	__imul__     = None  #def __imul__    (self, y):        result = array.__imul__    (self, y)       ; self.refresh_ndarray(); return result
-	__setslice__ = None  #def __setslice__(self, i, j, y):  result = array.__setslice__(self, i, j, y) ; self.refresh_ndarray(); return result
-	append       = None  #def append      (self, x):        result = array.append      (self, x)       ; self.refresh_ndarray(); return result
-	extend       = None  #def extend      (self, iterable): result = array.extend      (self, iterable); self.refresh_ndarray(); return result
-	fromfile     = None  #def fromfile    (self, f, n):     result = array.fromfile    (self, f, n)    ; self.refresh_ndarray(); return result
-	fromlist     = None  #def fromlist    (self, list):     result = array.fromlist    (self, list)    ; self.refresh_ndarray(); return result
-	fromstring   = None  #def fromstring  (self, string):   result = array.fromstring  (self, string)  ; self.refresh_ndarray(); return result
-	fromunicode  = None  #def fromunicode (self, ustr):     result = array.fromunicode (self, ustr)    ; self.refresh_ndarray(); return result
-	insert       = None  #def insert      (self, i, x):     result = array.insert      (self, i, x)    ; self.refresh_ndarray(); return result
-	pop          = None  #def pop         (self, i = None): result = array.pop         (self, i)       ; self.refresh_ndarray(); return result
-	read         = None  #def read        (self, f, n):     result = array.read        (self, f, n)    ; self.refresh_ndarray(); return result
-	remove       = None  #def remove      (self, x):        result = array.remove      (self, x)       ; self.refresh_ndarray(); return result
+			self._min_size_on_reallocate = n
+	def _get_ndarray(self):
+		impl = self._impl
+		return numpy.frombuffer(impl, self.dtype, self._len, self._off * numpy.dtype(self.dtype).itemsize) if impl is not None else None
+	def tolist(self): return list(self)
+	def __getslice__(self, i, j, stride=1):
+		if i is None: i = 0
+		if i > self._len: i = self._len
+		if j is None or j > self._len: j = self._len
+		assert 0 <= i <= j
+		return self._impl[self._off + i : self._off + j : stride]
+	def __getitem__(self, i):
+		if isinstance(i, slice): return self.__getslice__(i.start, i.stop, i.step)
+		if i >= self._len: raise IndexError('invalid index')  # list() relies on this to find where it ends
+		assert 0 <= i < self._len
+		return self._impl[self._off + i]
+	def __setitem__(self, i, value):
+		assert 0 <= i < self._len
+		self._impl[self._off + i] = value
+	def __len__(self): return self._len
+	def __repr__(self): return repr(self.tolist())
 
 def with_numba(generator={}.get(None)):
 	try: result = numba
@@ -258,7 +329,25 @@ class Network(object):
 		for (eij, edge) in enumerate(self.edges):
 			print_("\t%s -> %s [penwidth=%s, label=\"%s\"];" % (edge.startNodeId, edge.endNodeId, 1 + int(visited_iedges[eij] if visited_iedges is not None else 0), edge.id))
 		print_("}", file=stdout)
-
+	def __getstate__(self):
+		stderr = sys.stderr if False else None
+		if stderr:
+			from timeit import default_timer as timer
+			tprev = timer()
+		result = cPickle.dumps(self.__dict__)
+		if stderr:
+			print_("Pickling Network... %.0f ms" % ((timer() - tprev) * 1000,), file=stderr)
+		return result
+	def __setstate__(self, state):
+		stderr = sys.stderr if False else None
+		if stderr:
+			from timeit import default_timer as timer
+			tprev = timer()
+		loaded = cPickle.loads(state)
+		result = self.__dict__.update(loaded)
+		if stderr:
+			print_("Unpickling Network... %.0f ms" % ((timer() - tprev) * 1000,), file=stderr)
+		return result
 	@staticmethod
 	def discretize_edges(edges_hmm, edges_tmin, dt,
 		inf=float('inf'),
@@ -753,24 +842,25 @@ def dijkstra_impl(children_nodes_concat, children_nodes_ends, edges_terminals, i
 				eij = children_nodes_concat[children_nodes_index]
 				jnode = edges_terminals[eij]
 				tj = ti + edge_lengths[eij]
-				if tj + min_itimes_to_dest[jnode] < ibudget + 1 and (revisit or visited_inodes[jnode] == invalid_budget):
+				if tj + min_itimes_to_dest[jnode] < ibudget + 1:
 					visited_iedges[eij] = ti
-					i = heap_node_to_index[jnode]
-					j_if_auto_detect_direction = -1
-					if i == -1:
-						i = n
-						n += 1
-						heap_index_to_node[i] = jnode
-						heap_node_to_index[jnode] = i
-						j_if_auto_detect_direction = ((i - 1) // arity if i != 0 else 0)
-					else:
-						old = heap[i]
-						assert old is not None
-						if tj < old: pass  # we will sift in this case
-						else: i = -1  # suppress sift
-					if i >= 0:
-						heap[i] = tj
-						heap_sift(i, 0, n, False, arity, min_heap, heap, heap_index_to_node, heap_node_to_index, j_if_auto_detect_direction, False)
+					if revisit or visited_inodes[jnode] == invalid_budget:
+						i = heap_node_to_index[jnode]
+						j_if_auto_detect_direction = -1
+						if i == -1:
+							i = n
+							n += 1
+							heap_index_to_node[i] = jnode
+							heap_node_to_index[jnode] = i
+							j_if_auto_detect_direction = ((i - 1) // arity if i != 0 else 0)
+						else:
+							old = heap[i]
+							assert old is not None
+							if tj < old: pass  # we will sift in this case
+							else: i = -1  # suppress sift
+						if i >= 0:
+							heap[i] = tj
+							heap_sift(i, 0, n, False, arity, min_heap, heap, heap_index_to_node, heap_node_to_index, j_if_auto_detect_direction, False)
 				children_nodes_index += 1
 	num_itimes = numpy.zeros(node_count, numpy.int32)
 	for (i, tij) in stack:
@@ -778,23 +868,25 @@ def dijkstra_impl(children_nodes_concat, children_nodes_ends, edges_terminals, i
 	return (stack, visited_inodes, visited_iedges, num_itimes)
 
 class Policy(object):
-	__slots__ = (
+	__nonpickled_slots__ = (
 		# Assigned in __init__()
-		'cached_edges_end', 'cached_edges_tidist', 'cached_outgoing',
-		'convolver', 'discretization', 'edge_fft_cache', 'min_itimes_to_dest', 'network', 'prev_eij_ends', 'progress', 'suppress_calculation', 'temp_buffer_pairs', 'tijoffsets', 'timins', 'tiprevs', 'ue', 'uv', 'we', 'zero_delay_convolution',
-		# Assigned in prepare()
-		'end_itimes',
+		'ue', 'uv', 'we',
+		'cached_edges_self', 'cached_edges_neighbor', 'cached_edges_tidist', 'cached_neighbors', 'cached_edge_ffts', 'cached_tijoffsets'
 	)
-	def __init__(self, network, idst, discretization, zero_delay_convolution, cache_ffts, suppress_calculation=False, stderr=None):
+	__slots__ = __nonpickled_slots__ + (
+		# Assigned in __init__()
+		'cache_ffts', 'transpose_graph', 'convolver', 'discretization', 'min_itimes_to_dest', 'network', 'prev_eij_ends', 'progress', 'suppress_calculation', 'temp_buffer_pairs', 'timins', 'tiprevs', 'zero_delay_convolution',
+		# Assigned in prepare()
+		'final_itimes',
+	)
+	def __init__(self, network, idst, discretization, zero_delay_convolution, cache_ffts, transpose_graph=False, suppress_calculation=False, stderr=None):
 		self.network = network
 		self.discretization = float(discretization if discretization is not None else numpy.min(network.edges.tmin))
 		self.zero_delay_convolution = zero_delay_convolution
 		self.suppress_calculation = suppress_calculation
 		self.progress = 0
-		self.cached_edges_tidist = list(network.edges.tidist_override)
-		self.cached_outgoing = network.nodes.outgoing
-		self.cached_edges_end = network.edges.end
-		self.edge_fft_cache = {} if cache_ffts else None
+		self.cache_ffts = cache_ffts
+		self.transpose_graph = transpose_graph
 		self.temp_buffer_pairs = []  # we keep multiple buffers to avoid creating new array slice objects at every step
 		convolvers = []
 		if drfft:
@@ -818,26 +910,59 @@ class Policy(object):
 		timins = discretize_down(network.edges.tmin, self.discretization).astype(int) if True else [0]
 		assert numpy.all(timins), "Illegal edge travel time %s < discretization interval %s" % (numpy.min(timins), self.discretization)
 		max_possible_budget = (1 << ((1 << 5) - 2)) - 2
-		(_, min_itimes_to_dest, _, _) = dijkstra(network, True, idst, timins, False, max_possible_budget, [0] * len(network.nodes))
-		self.min_itimes_to_dest = min_itimes_to_dest.tolist()
-		self.timins             = timins.tolist()
-		self.tijoffsets         = (timins + min_itimes_to_dest[network.edges.end]).tolist()
-		self.prev_eij_ends      = [0] * len(network.edges)
-		self.tiprevs            = [0] * len(network.nodes)
+		(_, min_itimes_to_dest, _, _) = dijkstra(network, not self.transpose_graph, idst, timins, False, max_possible_budget, [0] * len(network.nodes))
+		self.min_itimes_to_dest = Array.fromitems(int, min_itimes_to_dest)
+		self.timins             = Array.fromitems(int, timins)
+		self.prev_eij_ends      = Array.fromitems(int, [0] * len(network.edges))
+		self.tiprevs            = Array.fromitems(int, [0] * len(network.nodes))
 		if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
 
+		if stderr is not None: tprev = timeit.default_timer(); print_("Initializing vertices and edges...", end=' ', file=stderr)
+		self._postinit()
+		if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
+	def _postinit(self):
+		network = self.network
+		nnodes = len(network.nodes)
+		nedges = len(network.edges)
 		self.ue = list(map(lambda _: Array(float,  0.0), network.edges)) if True else [Array(float)]
 		self.we = list(map(lambda _: Array(bool, False), network.edges)) if True else [Array(bool )]  # whether each edge is optimal at each time
 		self.uv = list(map(lambda tioffset: Array(float, float('NaN') if tioffset > 0 else 1.0), self.min_itimes_to_dest)) if True else [Array(float)]
-
+		self.cached_edges_tidist   = list(network.edges.tidist_override)
+		self.cached_neighbors      = network.nodes.outgoing if not self.transpose_graph else network.nodes.incoming
+		self.cached_edges_self     = network.edges.begin    if not self.transpose_graph else network.edges.end
+		self.cached_edges_neighbor = network.edges.end      if not self.transpose_graph else network.edges.begin
+		self.cached_edge_ffts      = {} if self.cache_ffts else None
+		self.cached_tijoffsets     = Array.fromitems(int, self.timins.assert_size(nedges) + self.min_itimes_to_dest.assert_size(nnodes)[self.cached_edges_neighbor])
+	def __getstate__(self):
+		cls = Policy
+		array_fields = sorted(frozenset(Array.__slots__) - frozenset(Array.__nonpickled_slots__))
+		arrays = list(map(lambda field: [], array_fields))
+		for arr in (self.ue, self.we, self.uv):
+			for item in arr:
+				for i, field in enumerate(array_fields):
+					arrays[i].append(getattr(item, field))
+		return (slotted_getstate(cls, self), arrays)
+	def __setstate__(self, compound_state):
+		cls = Policy
+		(state, arrays) = compound_state
+		offsets = list(map(lambda array: 0, arrays))
+		slotted_setstate(cls, self, state)
+		cls._postinit(self)
+		array_fields = sorted(frozenset(Array.__slots__) - frozenset(Array.__nonpickled_slots__))
+		for arr in (self.ue, self.we, self.uv):
+			for item in arr:
+				for i, field in enumerate(array_fields):
+					setattr(item, field, arrays[i][offsets[i]])
+					offsets[i] += 1
+				item._postinit()
 	def prepare(self, isrc, tbudget, preallocate_aggressively, prediscretize, stderr=None):
 		# preallocate_aggressively = {-1: minimize dynamic memory usage, 0: minimize initialization latency, 1: maximize speed}
 		network = self.network
-		if stderr is not None: tprev = timeit.default_timer(); print_("Computing optimal update order...", end=' ', file=stderr)
 		ibudget = int(discretize_up(numpy.asarray([tbudget], float), self.discretization))
-		(stack, _, visited_iedges, end_itimes) = dijkstra(network, False, isrc, self.timins, True, ibudget, self.min_itimes_to_dest)
+		if stderr is not None: tprev = timeit.default_timer(); print_("Computing memory requirements...", end=' ', file=stderr)
+		(_, _, visited_iedges, final_itimes) = self._dijkstra(isrc, ibudget, False)
 		eused = numpy.flatnonzero((0 <= visited_iedges) & (visited_iedges <= ibudget)).tolist()
-		self.end_itimes = end_itimes.tolist()
+		self.final_itimes = final_itimes.tolist()
 		if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
 
 		if prediscretize:
@@ -851,18 +976,48 @@ class Policy(object):
 				self.cached_edges_tidist[eiused] = tidist
 			if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
 
-		if preallocate_aggressively >= 0:
-			# uv[i][t] should be the probability of reaching the destination from node i in <= t steps (so for T = 0 we get uv[idst] == [1.0])
-			# Rationale: uv[i] should be the convolution of edge[i,j] with uv[j], with no elements missing.
+		if stderr is not None: tprev = timeit.default_timer(); print_("Pre-allocating buffers (if requested)...", end=' ', file=stderr)
+		total_progress = 0
+		# uv[i][t] should be the probability of reaching the destination from node i in <= t steps (so for T = 0 we get uv[idst] == [1.0])
+		# Rationale: uv[i] should be the convolution of edge[i,j] with uv[j], with no elements missing.
+		single_buffer = True
+		combined_uv = {}.get(None)
+		combined_ue = {}.get(None)
+		combined_we = {}.get(None)
+		for pass_ in (False, True):
+			combined_v_size = 0
 			for i in xrange(len(self.min_itimes_to_dest)):
-				m = max(self.end_itimes[i] - self.min_itimes_to_dest[i], 0)
-				self.uv[i].ensure_size(m, preallocate_aggressively > 0)
+				m = max(self.final_itimes[i] - self.min_itimes_to_dest[i], 0)
+				if preallocate_aggressively >= 0:
+					if preallocate_aggressively > 0:
+						if pass_ and single_buffer: self.uv[i].switch_buffer(combined_uv, combined_v_size, m)
+						combined_v_size += m
+					if pass_: self.uv[i].ensure_size(m, preallocate_aggressively > 0)
+			if not pass_ and preallocate_aggressively > 0 and single_buffer:
+				combined_uv = Array.create_buffer(Array.compute_type_code(float), combined_v_size)
+			combined_e_size = 0
 			for eij in eused:
-				m = max(self.end_itimes[network.edges.begin[eij]] - (self.timins[eij] + self.min_itimes_to_dest[network.edges.end[eij]]), 0)
-				self.ue[eij].ensure_size(m, preallocate_aggressively > 0)
-				self.we[eij].ensure_size(m, preallocate_aggressively > 0)
-		return (stack, eused, ibudget)
-
+				m = max(self.final_itimes[self.cached_edges_self[eij]] - (self.timins[eij] + self.min_itimes_to_dest[self.cached_edges_neighbor[eij]]), 0)
+				if pass_: total_progress += m
+				if preallocate_aggressively >= 0:
+					if preallocate_aggressively > 0:
+						if pass_ and single_buffer: self.ue[eij].switch_buffer(combined_ue, combined_e_size, m)
+						if pass_ and single_buffer: self.we[eij].switch_buffer(combined_we, combined_e_size, m)
+						combined_e_size += m
+					if pass_: self.ue[eij].ensure_size(m, preallocate_aggressively > 0)
+					if pass_: self.we[eij].ensure_size(m, preallocate_aggressively > 0)
+			if not pass_ and preallocate_aggressively > 0 and single_buffer:
+				combined_ue = Array.create_buffer(Array.compute_type_code(float), combined_e_size)
+				combined_we = Array.create_buffer(Array.compute_type_code(bool ), combined_e_size)
+		if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
+		return (eused, ibudget, total_progress)
+	def _dijkstra(self, isrc, ibudget, revisit):
+		return dijkstra(self.network, self.transpose_graph, isrc, self.timins, revisit, ibudget, self.min_itimes_to_dest)
+	def compute_optimal_update_order(self, isrc, ibudget, stderr=None):
+		if stderr is not None: tprev = timeit.default_timer(); print_("Computing optimal update order...", end=' ', file=stderr)
+		stack = self._dijkstra(isrc, ibudget, True)[0]
+		if stderr is not None: print_(int((timeit.default_timer() - tprev) * 1000), "ms", file=stderr); del tprev
+		return stack
 	def step(self, i, ti, edges_seen=None,
 		len=len, complex=complex, numpy_maximum=numpy.maximum, numpy_empty=numpy.empty, numpy_greater_equal=numpy.greater_equal,
 		zdconvolution=numba_single_overload_entrypoint(zdconvolution), convolve_into=numba_single_overload_entrypoint(convolve_into)):
@@ -873,23 +1028,23 @@ class Policy(object):
 		uvi_size = ti - tioffset
 		if uvi_size < 0: uvi_size = 0
 		uv = self.uv
-		uvi = uv[i].ensure_size(uvi_size)
+		uvi = uv[i].assert_size(uvi_size)
 		if tioffset > 0:
 			suppress_calculation = self.suppress_calculation
 			deferred_ge = []
 			deferred_ge_append = deferred_ge.append
 			progress = self.progress
-			end_itimes = self.end_itimes
-			edges_end = self.cached_edges_end
+			final_itimes = self.final_itimes
+			edges_end = self.cached_edges_neighbor
 			ue = self.ue
 			we = self.we
 			prev_eij_ends = self.prev_eij_ends
 			edges_tidist = self.cached_edges_tidist
-			tijoffsets = self.tijoffsets
+			tijoffsets = self.cached_tijoffsets
 			zero_delay_convolution = self.zero_delay_convolution
 			temp_buffer_pairs = None   # if uninitialized, we also need to initialize other FFT-only variables
 			uvi[uvi_size_prev : uvi_size] = 0  # initialize to zero first...
-			for eij in self.cached_outgoing[i]:
+			for eij in self.cached_neighbors[i]:
 				eij_begin = prev_eij_ends[eij]
 				tijoffset = tijoffsets[eij]
 				eij_end = ti - tijoffset
@@ -907,13 +1062,13 @@ class Policy(object):
 					assert uvj is not None
 					uvj_begin = eij_begin - etij_len
 					if uvj_begin < 0: uvj_begin = 0
-					ueij_len = end_itimes[i] - tijoffset
-					weij = we[eij].ensure_size(eij_end)
+					ueij_len = final_itimes[i] - tijoffset
+					weij = we[eij].assert_size(eij_end)
 					if zero_delay_convolution:
-						ueij = ue[eij].ensure_size(ueij_len)
+						ueij = ue[eij].assert_size(ueij_len)
 					if 1:  # to suppress computations, set this to 0
 						if zero_delay_convolution:
-							conv_list = zdconvolution(end_itimes[j] - min_itimes_to_dest[j], etij_len, eij_begin, eij_end)
+							conv_list = zdconvolution(final_itimes[j] - min_itimes_to_dest[j], etij_len, eij_begin, eij_end)
 							ueij_slice = ueij[eij_begin : eij_end]
 						else:
 							an = eij_end - uvj_begin
@@ -936,7 +1091,7 @@ class Policy(object):
 								conv_length = n
 							if min_len >= 0x80:
 								if temp_buffer_pairs is None:
-									edge_fft_cache = self.edge_fft_cache
+									edge_ffts = self.cached_edge_ffts
 									temp_buffer_pairs = self.temp_buffer_pairs
 									(conv_initialize, conv_forward, conv_multiply, conv_backward, conv_dual_dtype) = self.convolver
 								m_log2 = cn.bit_length()
@@ -958,8 +1113,8 @@ class Policy(object):
 									uvj_slice_padded[an : m] = 0
 									uvj_slice_padded_dft = conv_forward(uvj_slice_padded, s)
 								if uvj_slice_padded_dft is None: uvj_slice_padded_dft = uvj_slice_padded
-								b_key = (eij, b1, b1 + bn, m) if edge_fft_cache is not None else None
-								etij_slice_padded_dft = edge_fft_cache.get(b_key) if edge_fft_cache else None
+								b_key = (eij, b1, b1 + bn, m) if edge_ffts is not None else None
+								etij_slice_padded_dft = edge_ffts.get(b_key) if edge_ffts else None
 								if etij_slice_padded_dft is None:
 									etij_slice_padded = temp_buffer_pair[1]
 									etij_slice = etij[b1:b2]
@@ -969,8 +1124,8 @@ class Policy(object):
 										etij_slice_padded[bn : m] = 0
 										etij_slice_padded_dft = conv_forward(etij_slice_padded, s)
 									if etij_slice_padded_dft is None: etij_slice_padded_dft = etij_slice_padded
-									if edge_fft_cache is not None:
-										edge_fft_cache[b_key] = +etij_slice_padded_dft
+									if edge_ffts is not None:
+										edge_ffts[b_key] = +etij_slice_padded_dft
 								conv_dft = None
 								if not suppress_calculation:
 									conv_dft = conv_multiply(etij_slice_padded_dft, uvj_slice_padded_dft, uvj_slice_padded_dft)
@@ -1035,7 +1190,7 @@ class Path(object):
 		del self.pq[:]
 		uvsrc = self.policy.uv[isrc][tibudget - self.policy.min_itimes_to_dest[isrc]:]
 		self.pq.append((
-			-(max(uvsrc.tolist()) if len(uvsrc) > 0 else 0.0),
+			-(max(uvsrc) if len(uvsrc) > 0 else 0.0),
 			((), ~len(self.policy.network.edges)), isrc,
 			0, RSet({isrc}), self.kronecker_delta, self.path_tree_root
 		))
@@ -1048,9 +1203,10 @@ class Path(object):
 		#   you can easily get exponential-time behavior. (!)
 		result = None
 		policy = self.policy
-		cached_edges_tidist = policy.cached_edges_tidist
+		edges_tidist = policy.cached_edges_tidist
 		min_itimes_to_dest = policy.min_itimes_to_dest
-		network = policy.network
+		edges_neighbors = policy.cached_edges_neighbor
+		neighbors = policy.cached_neighbors
 		timins = policy.timins
 		uv = policy.uv
 		pq = self.pq
@@ -1063,8 +1219,9 @@ class Path(object):
 				if reached_destination:
 					self.found_reliability = reliability
 				else:
-					for k, eij in enumerate(network.nodes.outgoing[i]):
-						j = network.edges.end[eij]
+					for k, eij in enumerate(neighbors[i]):
+						j = edges_neighbors[eij]
+						uvj_ndarray = uv[j].ndarray
 						timin_elapsed_next = timin_elapsed + timins[eij]
 						timin_elapsed_and_remaining = timin_elapsed_next + min_itimes_to_dest[j]
 						timax_left_next_minus_offset = self.tibudget - timin_elapsed_and_remaining
@@ -1076,15 +1233,21 @@ class Path(object):
 						if path_tree_node is None:
 							path_tree_node_next = []
 							path_node_set_next = RSet({j}, path_node_set)
-							tidist_next = convolve(tidist_curr, cached_edges_tidist[eij])[:self.tibudget_max - timin_elapsed_and_remaining + 1]
-							reliabilities = convolve(tidist_next, uv[j].ndarray[:self.tibudget_max - timin_elapsed_and_remaining + 1])
+							etij = edges_tidist[eij]
+							if etij is None:  # TODO: PERF: We really shouldn't have to re-discretize edges... we should be able to leverage what was already discretized by the policy.
+								network = self.policy.network
+								suppress_calculation = False
+								[etij] = network.discretize_edges(network.edges.hmm[eij : eij + 1], network.edges.tmin[eij : eij + 1], self.policy.discretization, suppress_calculation=suppress_calculation)
+								edges_tidist[eij] = etij
+							tidist_next = convolve(tidist_curr, etij)[:self.tibudget_max - timin_elapsed_and_remaining + 1]
+							reliabilities = convolve(tidist_next, uvj_ndarray[:self.tibudget_max - timin_elapsed_and_remaining + 1])
 							path_tree_node_parent[k] = (path_tree_node_next, path_node_set_next, tidist_next, reliabilities)
 						else:
 							(path_tree_node_next, path_node_set_next, tidist_next, reliabilities) = path_tree_node
 						reliability_next = float(reliabilities[timax_left_next_minus_offset])
 						assert 1 or numpy.any(numpy.isclose(reliability_next, numpy.dot(
-							tidist_next[max(timax_left_next_minus_offset + 1 - len(uv[j].ndarray), 0) : timax_left_next_minus_offset + 1],
-							uv[j].ndarray[max(timax_left_next_minus_offset + 1 - len(tidist_next), 0) : timax_left_next_minus_offset + 1][::-1]
+							tidist_next[max(timax_left_next_minus_offset + 1 - len(uvj_ndarray), 0) : timax_left_next_minus_offset + 1],
+							uvj_ndarray[max(timax_left_next_minus_offset + 1 - len(tidist_next), 0) : timax_left_next_minus_offset + 1][::-1]
 							).item(), 1E-7, 1E-10))
 						heapq.heappush(pq, (-reliability_next, (path_so_far, eij), j, timin_elapsed_next, path_node_set_next, tidist_next, path_tree_node_next))
 				result = (reached_destination, path_so_far, reliability)
