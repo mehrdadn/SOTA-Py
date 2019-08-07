@@ -1,4 +1,6 @@
 import argparse
+import collections
+import copy
 import ctypes
 import heapq
 import imp
@@ -458,6 +460,39 @@ class PolicyGUIUpdater(object):
 				dirty_iedges_append(eij)
 			next_edge_update_times_minus_tijoffset[eij] = ti - tijoffsets[eij]
 
+class ThreadingPipe(object):
+	def __init__(self, read_semaphore, read_deque, write_semaphore, write_deque):
+		self.sr = read_semaphore
+		self.qr = read_deque
+		self.sw = write_semaphore
+		self.qw = write_deque
+	def poll(self, timeout=0):
+		if timeout not in (0, None): raise ValueError("only %s and %s are supported timeouts" % (0, None))
+		popped = False
+		if True:   # Try avoiding the semaphore
+			try:
+				value = self.qr.popleft()
+				popped = True
+			except IndexError: pass
+		if popped:
+			self.qr.appendleft(value)
+			result = popped
+		else:
+			result = self.sr.acquire(timeout != 0)
+			if result: self.sr.release()
+		return result
+	def recv(self):
+		self.sr.acquire()
+		return self.qr.popleft()
+	def send(self, obj, do_copy=True):
+		self.qw.append(copy.deepcopy(obj) if do_copy else obj)
+		self.sw.release()
+
+def make_threading_pipes():
+	(s1, q1) = (threading.Semaphore(0), collections.deque())
+	(s2, q2) = (threading.Semaphore(0), collections.deque())
+	return (ThreadingPipe(s1, q1, s2, q2), ThreadingPipe(s2, q2, s1, q1))
+
 if __name__ in ('__parents_main__', '__mp_main__'): print_("Communicating computational state to worker process...", end=" ", file=sys.stderr)
 def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tprev=timer()):
 	stderr = sys.stderr
@@ -523,7 +558,7 @@ def apply_async(multiprocess, func, args={}.get(None)):
 	global multiprocessing
 	try: multiprocessing
 	except NameError: import multiprocessing
-	(piper, pipew) = multiprocessing.Pipe(True)
+	(piper, pipew) = multiprocessing.Pipe(True) if multiprocess else make_threading_pipes()
 	kwargs = {'pipe': pipew}
 	if multiprocess:
 		process = multiprocessing.Process(target=func, args=args, kwargs=kwargs)
@@ -620,10 +655,9 @@ def main(program, *args):
 			gui_policy_updater = PolicyGUIUpdater(sota_policy, sota_policy.transpose_graph, gui)
 			while 1:
 				pipe.send(True)
-				bytes = pipe.recv()
-				if not bytes: break
-				item = bytes
-				(ti, active_gui_edges, progress) = item
+				obj = pipe.recv()
+				if not obj: break
+				(ti, active_gui_edges, progress) = obj
 				gui_policy_updater.mark_dirty_edges(ti, active_gui_edges)
 				time_now1 = timer()
 				if gui.is_out_of_date(gui_policy_update_interval_sec):
@@ -655,9 +689,9 @@ def main(program, *args):
 			NEW_EDGE_GUI_UPDATE = ((1, 0.25, 0, gui.alpha_processed), 4, 4)
 			while 1:
 				pipe.send(True)
-				bytes = pipe.recv()
-				if not bytes: break
-				(new_edges_seen_delta, pending_items) = bytes
+				obj = pipe.recv()
+				if not obj: break
+				(new_edges_seen_delta, pending_items) = obj
 				new_edges_seen.update(new_edges_seen_delta); del new_edges_seen_delta
 				if gui.is_out_of_date(gui_path_update_interval_sec):
 					new_edges_seen.difference_update(old_edges_seen)
