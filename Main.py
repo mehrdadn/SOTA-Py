@@ -491,10 +491,10 @@ class ThreadingPipe(object):
 		self.qw.append(copy.deepcopy(obj) if do_copy else obj)
 		self.sw.release()
 
-def make_threading_pipes():
+def make_threading_pipes(duplex=True):
 	(s1, q1) = (threading.Semaphore(0), collections.deque())
-	(s2, q2) = (threading.Semaphore(0), collections.deque())
-	return (ThreadingPipe(s1, q1, s2, q2), ThreadingPipe(s2, q2, s1, q1))
+	(s2, q2) = (threading.Semaphore(0) if duplex else None, collections.deque() if duplex else None)
+	return (ThreadingPipe(s1, q1, s2 if duplex else None, q2 if duplex else None), ThreadingPipe(s2 if duplex else None, q2 if duplex else None, s1, q1))
 
 if __name__ in ('__parents_main__', '__mp_main__'): print_("Communicating computational state to worker process...", end=" ", file=sys.stderr)
 def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tprev=timer()):
