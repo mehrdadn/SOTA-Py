@@ -3,7 +3,6 @@ import collections
 import copy
 import ctypes
 import heapq
-import imp
 import os
 import sys
 import timeit
