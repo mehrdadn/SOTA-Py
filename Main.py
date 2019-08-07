@@ -12,11 +12,6 @@ else: print_ = __import__('__builtin__').__dict__['print']
 
 timer = timeit.default_timer
 
-if 'numpy' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing numpy...", end=' ', file=sys.stderr)
-import numpy
-if 'tprev' in locals(): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr); del tprev
-
-if 'scipy.special' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing scipy.special...", end=' ', file=sys.stderr)
 try:
 	SetConsoleCtrlHandler_body_new = b'\xC2\x08\x00' if ctypes.sizeof(ctypes.c_void_p) == 4 else b'\xC3'
 	try: SetConsoleCtrlHandler_body = (lambda kernel32: (lambda pSetConsoleCtrlHandler:
@@ -28,13 +23,18 @@ try:
 		SetConsoleCtrlHandler_body_old = SetConsoleCtrlHandler_body[0:len(SetConsoleCtrlHandler_body_new)]
 		SetConsoleCtrlHandler_body[0:len(SetConsoleCtrlHandler_body_new)] = SetConsoleCtrlHandler_body_new
 	try:
+		if 'numpy' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing numpy...", end=' ', file=sys.stderr)
+		import numpy
+		if 'tprev' in locals(): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr); del tprev
+
+		if 'scipy.special' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing scipy.special...", end=' ', file=sys.stderr)
 		import scipy.special
+		if 'tprev' in locals(): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr); del tprev
 	finally:
 		if SetConsoleCtrlHandler_body:
 			SetConsoleCtrlHandler_body[0:len(SetConsoleCtrlHandler_body_new)] = SetConsoleCtrlHandler_body_old
 except ImportError as e:
 	pass
-if 'tprev' in locals(): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr); del tprev
 
 if 'numba' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing numba...", end=' ', file=sys.stderr)
 try: import numba
