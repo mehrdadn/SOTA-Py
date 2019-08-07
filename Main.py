@@ -321,7 +321,8 @@ class NetworkGUI(object):
 			if resort: self.sort_edges()
 			if self.possibly_needs_drawing:
 				self.window.dispatch_event('on_draw')
-				self.window.flip()
+				if self.window.config.double_buffer: self.window.flip()
+				else: pyglet.gl.glFlush()
 				self.invalidated = 0
 				self.captured_frames += 1
 				if self.gif:
