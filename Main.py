@@ -622,7 +622,7 @@ def main(program, *args):
 	transpose_graph = False
 	if transpose_graph: (isrc, idst) = (idst, isrc)
 
-	gui_update_interval_sec = 1. / 25
+	gui_update_interval_sec = 1. / (60 if multiprocess else 25)
 	gif_name = None #'sota_captured.gif'
 	gif = {}.get(None)
 	try:
