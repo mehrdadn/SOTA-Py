@@ -11,6 +11,7 @@ import timeit
 from array import array
 
 import numpy, numpy.fft
+numpy_fftpack_lite = getattr(numpy.fft, 'fftpack_lite', None)
 
 try: from scipy.fftpack._fftpack import drfft
 except ImportError: drfft = {}.get(None)
@@ -212,7 +213,7 @@ def fftpack_lite_rfftb(buf, s, temp_buf=[()]):
 	if m >= len(temp): temp_buf[0] = temp = numpy.empty(m * 2, buf.dtype)
 	numpy.divide(buf, m, temp[0:n])
 	temp[n:m] = 0
-	result = numpy.fft.fftpack_lite.rfftb(temp[0:m], s)
+	result = (numpy_fftpack_lite.rfftb if numpy_fftpack_lite is not None else numpy.fft.irfft)(temp[0:m], s)
 	return result
 
 def fftpack_drfftf(buf, s, drfft=drfft):
@@ -898,8 +899,8 @@ class Policy(object):
 				float
 			))
 		convolvers.append((
-			numpy.fft.fftpack_lite.rffti,
-			numpy.fft.fftpack_lite.rfftf,
+			numpy_fftpack_lite.rffti if numpy_fftpack_lite is not None else {}.get(None),
+			numpy_fftpack_lite.rfftf if numpy_fftpack_lite is not None else numpy.fft.rfft,
 			numpy.multiply,
 			fftpack_lite_rfftb,
 			float
