@@ -399,7 +399,7 @@ class PolicyGUIUpdater(object):
 		self.dirty_iedges = []
 		self.barray = {}.get(None)
 		self.revision = 0
-	def update(self, tinow={}.get(None), umr_sum=numpy.core._methods.umr_sum):
+	def update(self, tinow={}.get(None), umr_sum=numpy.core._methods.umr_sum if hasattr(numpy.core._methods, 'umr_sum') else numpy.core._methods.um.add.reduce if hasattr(numpy.core._methods, 'um') else numpy.core.umath.add.reduce):
 		old_revision = self.revision
 		revision = old_revision + 1
 		self.revision = revision
