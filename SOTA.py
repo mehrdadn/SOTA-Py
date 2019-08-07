@@ -1079,7 +1079,7 @@ class Policy(object):
 							conv_list = [(uvj_begin, eij_end, 0, bn, eij_begin - uvj_begin, an, bn)]
 							ueij_slice = None
 						for (a1, a2, b1, b2, c1, an, bn) in conv_list:  # PERF: This loop seems to take too much time outside the convolutions themselves
-							cn = an + bn - 1
+							cn = int(an + bn - 1)
 							min_len = bn if bn < an else an
 							assert min_len > 0, "Cannot convolve empty arrays"
 							if zero_delay_convolution:
