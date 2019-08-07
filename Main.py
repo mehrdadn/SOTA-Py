@@ -39,7 +39,11 @@ except ImportError as e:
 	pass
 
 if 'numba' not in sys.modules and __name__ == '__main__': tprev = timer(); print_("Importing numba...", end=' ', file=sys.stderr)
-try: import numba
+try:
+	existed = 'pkg_resources' in sys.modules
+	if not existed: sys.modules['pkg_resources'] = None
+	try: import numba
+	finally: existed and sys.modules.pop('pkg_resources'); del existed
 except ImportError: pass
 if 'tprev' in locals(): print_(int((timer() - tprev) * 1000), "ms", file=sys.stderr); del tprev
 
