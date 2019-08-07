@@ -654,7 +654,7 @@ def main(program, *args):
 			prev_progress = init_progress
 			gui_policy_updater = PolicyGUIUpdater(sota_policy, sota_policy.transpose_graph, gui)
 			while 1:
-				pipe.send(True)
+				if not pipe.poll(): pipe.send(True)
 				obj = pipe.recv()
 				if not obj: break
 				(ti, active_gui_edges, progress) = obj
@@ -688,7 +688,7 @@ def main(program, *args):
 			OLD_EDGE_GUI_UPDATE = ((1, 0.75, 0, gui.alpha_processed), 3, 6)
 			NEW_EDGE_GUI_UPDATE = ((1, 0.25, 0, gui.alpha_processed), 4, 4)
 			while 1:
-				pipe.send(True)
+				if not pipe.poll(): pipe.send(True)
 				obj = pipe.recv()
 				if not obj: break
 				(new_edges_seen_delta, pending_items) = obj
