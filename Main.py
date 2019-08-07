@@ -557,10 +557,14 @@ def worker_process(sota_policy, isrc, tibudget, tibudget_end_exclusive, pipe, tp
 			tibudget_current = tibudget_current - 1 if tibudget_current > tibudget_end_exclusive else tibudget_current + 1
 	finally: pipe.send(b'')
 
-def apply_async(multiprocess, func, args={}.get(None)):
+def get_multiprocessing():
 	global multiprocessing
 	try: multiprocessing
 	except NameError: import multiprocessing
+	return multiprocessing
+
+def apply_async(multiprocess, func, args={}.get(None)):
+	multiprocessing = get_multiprocessing()
 	(piper, pipew) = multiprocessing.Pipe(True) if multiprocess else make_threading_pipes()
 	kwargs = {'pipe': pipew}
 	if multiprocess:
@@ -575,7 +579,7 @@ def apply_async(multiprocess, func, args={}.get(None)):
 def main(program, *args):
 	os.environ['SDL_VIDEO_CENTERED'] = '1'
 	numpy.seterr(all='raise')
-	multiprocess = False
+	multiprocess = get_multiprocessing().cpu_count() > 1
 	stdin  = sys.stdin
 	stdout = sys.stdout
 	stderr = sys.stderr
