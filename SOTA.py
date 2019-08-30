@@ -214,6 +214,8 @@ def fftpack_lite_rfftb(buf, s, temp_buf=[()]):
 	numpy.divide(buf, m, temp[0:n])
 	temp[n:m] = 0
 	result = (numpy_fftpack_lite.rfftb if numpy_fftpack_lite is not None else numpy.fft.irfft)(temp[0:m], s)
+	if numpy_fftpack_lite is None:
+		result *= s
 	return result
 
 def fftpack_drfftf(buf, s, drfft=drfft):
@@ -899,7 +901,7 @@ class Policy(object):
 				float
 			))
 		convolvers.append((
-			numpy_fftpack_lite.rffti if numpy_fftpack_lite is not None else {}.get(None),
+			numpy_fftpack_lite.rffti if numpy_fftpack_lite is not None else numpy.positive,
 			numpy_fftpack_lite.rfftf if numpy_fftpack_lite is not None else numpy.fft.rfft,
 			numpy.multiply,
 			fftpack_lite_rfftb,
