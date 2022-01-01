@@ -13,6 +13,9 @@ from array import array
 import numpy, numpy.fft
 numpy_fftpack_lite = getattr(numpy.fft, 'fftpack_lite', None)
 
+try: from numpy.fft._pocketfft_internal import execute as pfi_execute
+except ImportError: pfi_execute = {}.get(None)
+
 try: from scipy.fftpack._fftpack import drfft
 except ImportError: drfft = {}.get(None)
 
@@ -206,16 +209,45 @@ def numba_single_overload_entrypoint(f):
 		f = overload.entry_point
 	return f
 
-def fftpack_lite_rfftb(buf, s, temp_buf=[()]):
+def convolve_with_convolver_impl(convolver, left_input, an, right_input, bn, m, scratch_left_padded, scratch_right_padded):
+	(conv_initialize, conv_forward, conv_multiply, conv_backward, conv_dual_dtype) = convolver
+	s = conv_initialize(m) if conv_initialize is not None else None
+	scratch_left_padded[0 : an] = left_input
+	scratch_left_padded[an : m] = 0
+	left_padded_dft = conv_forward(scratch_left_padded, s)
+	if left_padded_dft is None: left_padded_dft = scratch_left_padded
+	scratch_right_padded[0 : bn] = right_input
+	scratch_right_padded[bn : m] = 0
+	right_padded_dft = conv_forward(scratch_right_padded, s)
+	if right_padded_dft is None: right_padded_dft = scratch_right_padded
+	conv_dft = conv_multiply(left_padded_dft, right_padded_dft, right_padded_dft)
+	if conv_dft is None: conv_dft = right_padded_dft
+	conv_result = conv_backward(conv_dft, s)
+	if conv_result is None: conv_result = conv_dft
+	return conv_result
+
+def convolve_with_convolver(convolver, left_input, right_input):
+	an = len(left_input)
+	bn = len(right_input)
+	m = 1 << int(an + bn - 1).bit_length()
+	buf = numpy.empty(m * 2, complex).view(convolver[4])
+	return convolve_with_convolver_impl(convolver, left_input, an, right_input, bn, m, buf[0 * m : 1 * m], buf[1 * m : 2 * m])
+
+def pre_rfftb(buf, s, temp_buf=[()]):
 	n = len(buf)
 	m = (n - 1) * 2
 	temp = temp_buf[0]
 	if m >= len(temp): temp_buf[0] = temp = numpy.empty(m * 2, buf.dtype)
 	numpy.divide(buf, m, temp[0:n])
 	temp[n:m] = 0
-	result = (numpy_fftpack_lite.rfftb if numpy_fftpack_lite is not None else numpy.fft.irfft)(temp[0:m], s)
-	if numpy_fftpack_lite is None:
-		result *= s
+	return temp[0:m]
+
+def fftpack_lite_rfftb(buf, s, pre_rfftb=pre_rfftb):
+	return numpy_fftpack_lite.rfftb(pre_rfftb(buf, s), s)
+
+def numpy_rfftb(buf, s, pre_rfftb=pre_rfftb):
+	result = numpy.fft.irfft(pre_rfftb(buf, s), s)
+	result *= s
 	return result
 
 def fftpack_drfftf(buf, s, drfft=drfft):
@@ -233,6 +265,20 @@ def fftpack_multiply(a, b, result):
 
 def fftpack_drfftb(buf, s, drfft=drfft):
 	return drfft(buf, None, -1, 1, 1)
+
+def pocketfft_rfftf(buf, s, pfi_execute=pfi_execute):
+	return pfi_execute(buf, True, True, 1)
+
+pocketfft_rfftb = numpy_rfftb
+
+@signature('void(complex128[::1], complex128[::1], complex128[::1])')
+def pocketfft_multiply(a, b, result):
+	n = len(result)
+	if n >= 1:
+		result[0] = a[0] * b[0]
+		if n >= 2:
+			numpy.multiply(a[1:-1], b[1:-1], result[1:-1])
+			result[-1] = a[-1] * b[-1]
 
 def with_scope(obj, func):
 	with obj: return func(obj)
@@ -900,14 +946,31 @@ class Policy(object):
 				fftpack_drfftb,
 				float
 			))
+		if pfi_execute:
+			convolvers.append((
+				numpy.positive,
+				pocketfft_rfftf,
+				numba_single_overload_entrypoint(pocketfft_multiply),
+				pocketfft_rfftb,
+				float
+			))
+		if numpy_fftpack_lite is not None:
+			convolvers.append((
+				numpy_fftpack_lite.rffti,
+				numpy_fftpack_lite.rfftf,
+				numpy.multiply,
+				fftpack_lite_rfftb,
+				float
+			))
 		convolvers.append((
-			numpy_fftpack_lite.rffti if numpy_fftpack_lite is not None else numpy.positive,
-			numpy_fftpack_lite.rfftf if numpy_fftpack_lite is not None else numpy.fft.rfft,
+			numpy.positive,
+			numpy.fft.rfft,
 			numpy.multiply,
-			fftpack_lite_rfftb,
+			numpy_rfftb,
 			float
 		))
 		self.convolver = convolvers[0]
+		assert all(map(lambda convolver: numpy.allclose(convolve_with_convolver(convolver, [1, 2, 3], [2, 5, 10]), [2, 9, 26, 35, 30, 0, 0, 0]), convolvers))
 
 		if stderr is not None: tprev = timeit.default_timer(); print_("Computing minimum travel times...", end=' ', file=stderr)
 		timins = discretize_down(network.edges.tmin, self.discretization).astype(int) if True else [0]
@@ -1093,51 +1156,33 @@ class Policy(object):
 								conv_begin = eij_begin - uvj_begin
 								conv_length = n
 							if min_len >= 0x80:
+								m_log2 = cn.bit_length()
 								if temp_buffer_pairs is None:
 									edge_ffts = self.cached_edge_ffts
 									temp_buffer_pairs = self.temp_buffer_pairs
-									(conv_initialize, conv_forward, conv_multiply, conv_backward, conv_dual_dtype) = self.convolver
-								m_log2 = cn.bit_length()
-								m = 1 << m_log2
-								s = conv_initialize(m) if conv_initialize is not None else None
 								try:
 									temp_buffer_pair = temp_buffer_pairs[m_log2]
 								except IndexError:
+									temp_buffer_pair = None
+								if temp_buffer_pair is None:
 									while m_log2 >= len(temp_buffer_pairs):
 										mi = 1 << len(temp_buffer_pairs)
-										temp_buffer = numpy.empty(mi + mi, complex).view(conv_dual_dtype)
+										temp_buffer = numpy.empty(mi + mi, complex).view(self.convolver[4])
 										temp_buffer_pairs.append((temp_buffer[0 : mi], temp_buffer[mi : mi + mi]))
 									temp_buffer_pair = temp_buffer_pairs[m_log2]
-								uvj_slice_padded = temp_buffer_pair[0]
-								uvj_slice = uvj[a1:a2]
-								uvj_slice_padded_dft = None
-								if not suppress_calculation:
-									uvj_slice_padded[0 : an] = uvj_slice
-									uvj_slice_padded[an : m] = 0
-									uvj_slice_padded_dft = conv_forward(uvj_slice_padded, s)
-								if uvj_slice_padded_dft is None: uvj_slice_padded_dft = uvj_slice_padded
+								m = 1 << m_log2
 								b_key = (eij, b1, b1 + bn, m) if edge_ffts is not None else None
-								etij_slice_padded_dft = edge_ffts.get(b_key) if edge_ffts else None
-								if etij_slice_padded_dft is None:
-									etij_slice_padded = temp_buffer_pair[1]
-									etij_slice = etij[b1:b2]
-									etij_slice_padded_dft = None
-									if not suppress_calculation:
-										etij_slice_padded[0 : bn] = etij_slice
-										etij_slice_padded[bn : m] = 0
-										etij_slice_padded_dft = conv_forward(etij_slice_padded, s)
-									if etij_slice_padded_dft is None: etij_slice_padded_dft = etij_slice_padded
+								left_padded_dft = edge_ffts.get(b_key) if edge_ffts else None
+								conv_result = convolve_with_convolver_impl(
+									self.convolver,
+									etij[b1:b2] if left_padded_dft is None else None, bn,
+									uvj[a1:a2], an,
+									m,
+									temp_buffer_pair[0], temp_buffer_pair[1]) if not suppress_calculation else None
+								conv = conv_result[conv_begin : conv_begin + conv_length] if conv_result is not None else None
+								if left_padded_dft is None:
 									if edge_ffts is not None:
-										edge_ffts[b_key] = +etij_slice_padded_dft
-								conv_dft = None
-								if not suppress_calculation:
-									conv_dft = conv_multiply(etij_slice_padded_dft, uvj_slice_padded_dft, uvj_slice_padded_dft)
-								if conv_dft is None: conv_dft = uvj_slice_padded_dft
-								conv = None
-								if not suppress_calculation:
-									conv = conv_backward(conv_dft, s)
-								if conv is None: conv = conv_dft
-								conv = conv[conv_begin : conv_begin + conv_length]
+										edge_ffts[b_key] = +left_padded_dft
 							else:
 								if zero_delay_convolution:
 									conv = ueij
