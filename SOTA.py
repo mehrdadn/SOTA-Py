@@ -1024,7 +1024,7 @@ class Policy(object):
 	def prepare(self, isrc, tbudget, preallocate_aggressively, prediscretize, stderr=None):
 		# preallocate_aggressively = {-1: minimize dynamic memory usage, 0: minimize initialization latency, 1: maximize speed}
 		network = self.network
-		ibudget = int(discretize_up(numpy.asarray([tbudget], float), self.discretization))
+		ibudget = int(discretize_up(numpy.asarray([tbudget], float), self.discretization)[0])
 		if stderr is not None: tprev = timeit.default_timer(); print_("Computing memory requirements...", end=' ', file=stderr)
 		(_, _, visited_iedges, final_itimes) = self._dijkstra(isrc, ibudget, False)
 		eused = numpy.flatnonzero((0 <= visited_iedges) & (visited_iedges <= ibudget)).tolist()
