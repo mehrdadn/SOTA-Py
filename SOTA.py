@@ -138,7 +138,7 @@ class Array(object):
 	@staticmethod
 	def compute_type_code(dtype):
 		if dtype == float: type_code = 'd'
-		elif dtype == int: type_code = 'l'  # 'q' not supported in Python 2
+		elif dtype == int: type_code = 'q' if sys.maxsize >= ((1 << ((1 << 6) - 1)) - 1) else 'l' if sys.maxsize >= ((1 << ((1 << 5) - 1)) - 1) else None
 		elif dtype == bool: type_code = 'B'  # one-byte bools
 		else: raise ValueError(dtype)
 		return type_code
